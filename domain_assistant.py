@@ -266,6 +266,38 @@ class OpenAIGenerator:
         return answer
 
 
+class GeminiGenerator:
+    def __init__(self, model: str = "gemini-3.5-flash-lite", max_output_tokens: int = 300) -> None:
+        from google import genai
+        api_key = os.getenv("GEMINI_API_KEY", "").strip() or os.getenv("GOOGLE_API_KEY", "").strip()
+        if not api_key:
+            raise RuntimeError("GEMINI_API_KEY is missing from .env")
+        self.model = os.getenv("GEMINI_MODEL", "").strip() or model
+        self.client = genai.Client(api_key=api_key)
+        self.max_output_tokens = max_output_tokens
+
+    def generate(self, prompt: str) -> str:
+        for attempt in range(6):
+            try:
+                response = self.client.models.generate_content(
+                    model=self.model,
+                    contents=prompt,
+                )
+                answer = (response.text or "").strip()
+                if not answer:
+                    raise RuntimeError("Gemini returned an empty answer")
+                time.sleep(3.5)
+                return answer
+            except Exception as e:
+                if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e) or "503" in str(e):
+                    wait = 6 * (attempt + 1)
+                    print(f"Rate limited or busy, waiting {wait}s...", flush=True)
+                    time.sleep(wait)
+                else:
+                    raise
+        raise RuntimeError("Failed to generate after retries")
+
+
 @dataclass(frozen=True)
 class DomainResponse:
     question: str
@@ -296,10 +328,18 @@ class DomainAssistant:
         top_k: int = 5,
     ) -> DomainAssistant:
         corpus_id, chunks = load_corpus(corpus_dir)
+        if generator is None:
+            openai_key = os.getenv("OPENAI_API_KEY", "").strip()
+            if openai_key and not openai_key.startswith("sk-your-") and not openai_key == "your_openai_api_key_here":
+                generator = OpenAIGenerator()
+            elif os.getenv("GEMINI_API_KEY", "").strip() or os.getenv("GOOGLE_API_KEY", "").strip():
+                generator = GeminiGenerator()
+            else:
+                generator = OpenAIGenerator()
         return cls(
             corpus_id,
             BM25Retriever(chunks),
-            generator if generator is not None else OpenAIGenerator(),
+            generator,
             top_k,
         )
 
